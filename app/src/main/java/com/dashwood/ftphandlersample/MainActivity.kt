@@ -59,10 +59,10 @@ fun Greeting(
     var message: String by remember { mutableStateOf("Connect") }
     val fileModelList = remember { mutableStateListOf<FileModel>() }
     val ftpService = FTPService(
-        host = "workspace.oscaret.com",
-        port = 2100,
-        username = "ftpsepehrandroid",
-        password = "FTPSep@And!14"
+        host = "",
+        port = 0,
+        username = "",
+        password = ""
     )
 
     ftpService.setListener(object : OnFTPJobListener {
