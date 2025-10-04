@@ -72,7 +72,6 @@ fun Greeting(
             message = "Connected"
             ftpService.list("/")
             //folderList.addAll(ftpService.list("/"))
-            // مثلاً بعد از اتصال لیست بگیر
             //ftp.list("/public_html")
         }
 
@@ -100,7 +99,6 @@ fun Greeting(
 
 
         override fun onError(action: FTPService.Action, error: FTPService.FtpError) {
-            // هندل خطا به تفکیک
             message =
                 when (error) {
                     is FTPService.FtpError.AuthFailed -> "Authentication failed user or pass wrong"
