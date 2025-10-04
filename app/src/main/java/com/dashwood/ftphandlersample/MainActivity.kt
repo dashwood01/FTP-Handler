@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -26,6 +27,7 @@ import com.dashwood.ftphandler.ftp_service.FTPService
 import com.dashwood.ftphandler.listener.OnFTPJobListener
 import com.dashwood.ftphandler.model.FileModel
 import com.dashwood.ftphandler.models.DownloadItem
+import com.dashwood.ftphandler.models.UploadItem
 import com.dashwood.ftphandlersample.ui.theme.FTPHandlerSampleTheme
 import java.io.File
 
@@ -90,6 +92,7 @@ fun Greeting(
                 val key = fm.name
                 seenKeys += key
                 transfers[key] = fm
+                println("NAME : ${fm.name} Size : ${fm.size} Progress : ${fm.bytesTransferred}")
             }
             // Optionally remove transfers that are not in the latest snapshot (finished)
             transfers.keys.retainAll(seenKeys)
@@ -126,6 +129,14 @@ fun Greeting(
                     }
                 }
             ) { Text(message) }
+            FilePickerSample({
+                val listFile = ArrayList<UploadItem>()
+                listFile.add(UploadItem(it, "/Path/Temp.txt"))
+                listFile.add(UploadItem(it, "/Path/Temp2.txt"))
+                listFile.add(UploadItem(it, "/Path/Temp3.txt"))
+                listFile.add(UploadItem(it, "/Path/Temp4.txt"))
+                ftpService.uploadMany(listFile)
+            })
         }
 
         // Your directory rows
@@ -157,7 +168,7 @@ fun Greeting(
                             val destFile = File(dashwoodFolder, fileModel.name)
 
                             // Start RESUMABLE download; progress will flow into `onProgress`
-                          //  ftpService.downloadResumable(remotePath, destFile)
+                            //  ftpService.downloadResumable(remotePath, destFile)
                             ftpService.downloadMany(
                                 items = listOf(DownloadItem(remotePath, destFile)),
                                 parallelism = 1 // one file in this call; you can keep >1 too
