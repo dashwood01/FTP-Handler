@@ -9,7 +9,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 21
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
@@ -41,7 +41,7 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 groupId = "com.github.dashwood01"
                 artifactId = "FTP-Handler"
-                version = "0.1.0"
+                version = "0.2.0"
 
                 from(components["release"])
             }
