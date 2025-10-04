@@ -275,3 +275,137 @@ PRs that improve stability, add unit tests around edge cases, or extend progress
 ## Support
 
 If you run into a real‑world edge case (firewalls, NATs, partial transfers), open an issue with **logs and steps**. I will be opinionated about scope creep—features should earn their place.
+
+
+---
+
+## Quick start (Java)
+
+Below is a minimal, plain-Android example (no Compose). You can drop this into an `Activity` or `ViewModel` and wire results into your UI (RecyclerView, etc.).
+
+```java
+import android.os.Environment;
+import java.io.File;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import com.dashwood.ftphandler.ftp_service.FTPService;
+import com.dashwood.ftphandler.listener.OnFTPJobListener;
+import com.dashwood.ftphandler.model.FileModel;
+import com.dashwood.ftphandler.models.DownloadItem;
+
+public class FtpSample {
+
+    private final FTPService ftp;
+    private final Map<String, FileModel> transfers = new HashMap<>();
+    private String folderSelected = "/";
+
+    public FtpSample() {
+        ftp = new FTPService("YOUR_HOST", 21, "USER", "PASS");
+        ftp.setListener(new OnFTPJobListener() {
+            @Override
+            public void onConnected() {
+                // Connected -> fetch root listing
+                ftp.list("/");
+            }
+
+            @Override
+            public void onSuccess(FTPService.Action action, Object msg) {
+                if (action == FTPService.Action.LIST) {
+                    @SuppressWarnings("unchecked")
+                    List<FileModel> files = (List<FileModel>) msg;
+                    // TODO: update your UI adapter with 'files'
+                    // e.g., adapter.submitList(files);
+                } else {
+                    // TODO: show success message if desired
+                }
+            }
+
+            @Override
+            public void onProgress(List<FileModel> fileModels) {
+                // Snapshot list of in-flight transfers with current byte counts
+                for (FileModel fm : fileModels) {
+                    // Key strategy: use full remote path if you can, name for brevity here
+                    transfers.put(fm.getName(), fm);
+                }
+                // TODO: notify UI about progress (e.g., notifyItemChanged)
+            }
+
+            @Override
+            public void onError(FTPService.Action action, FTPService.FtpError error) {
+                String message;
+                if (error instanceof FTPService.FtpError.AuthFailed) {
+                    message = "Authentication failed (username/password)";
+                } else if (error instanceof FTPService.FtpError.PathNotFound) {
+                    message = "Path not found";
+                } else if (error instanceof FTPService.FtpError.Timeout) {
+                    message = "Timeout";
+                } else if (error instanceof FTPService.FtpError.Protocol) {
+                    message = "Protocol error";
+                } else if (error instanceof FTPService.FtpError.IO) {
+                    message = "I/O error";
+                } else if (error instanceof FTPService.FtpError.NotConnected) {
+                    message = "Not connected";
+                } else {
+                    message = "Unknown error";
+                }
+                // TODO: show the 'message' to the user
+            }
+        });
+    }
+
+    public void connectIfNeeded() {
+        if (!ftp.isConnected()) {
+            ftp.connect();
+        }
+    }
+
+    public void open(FileModel file) {
+        switch (file.getType()) {
+            case DIR:
+                folderSelected = folderSelected + file.getName() + "/";
+                ftp.list(folderSelected);
+                break;
+            case FILE:
+                File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                File dashwood = new File(downloads, "DashWood");
+                if (!dashwood.exists()) dashwood.mkdirs();
+
+                String remote = folderSelected + file.getName();
+                File dest = new File(dashwood, file.getName());
+
+                // Parallel/queued downloads (set parallelism > 1 if you need multiple at once)
+                DownloadItem item = new DownloadItem(remote, dest);
+                ftp.downloadMany(Arrays.asList(item), 1);
+
+                // Or resumable single download for flaky links / large files:
+                // ftp.downloadResumable(remote, dest);
+                break;
+            case LINK:
+                // handle symlinks if you need
+                break;
+        }
+    }
+
+    public static String formatBytes(long b) {
+        double kb = 1024.0;
+        double mb = kb * 1024;
+        double gb = mb * 1024;
+        if (b >= gb) return String.format("%.2f GB", b / gb);
+        if (b >= mb) return String.format("%.2f MB", b / mb);
+        if (b >= kb) return String.format("%.2f KB", b / kb);
+        return b + " B";
+    }
+}
+```
+
+**Notes for Java users**
+- Keep a single `FTPService` instance per screen/task; call `disconnect()` when done.
+- Use a **unique key** for progress tracking (prefer the full remote path).
+- For API 29+, consider the Storage Access Framework/`MediaStore` to save user-visible files.
+- If ProGuard/R8 strips models, add:
+  ```pro
+  -keep class com.dashwood.ftphandler.** { *; }
+  ```
