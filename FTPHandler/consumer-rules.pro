@@ -1,0 +1,2 @@
+-keep class org.apache.commons.net.** { *; }
+-dontwarn org.apache.commons.net.**
