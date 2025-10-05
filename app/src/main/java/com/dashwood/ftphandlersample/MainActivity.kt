@@ -63,7 +63,7 @@ fun Greeting(
 
     // Live transfer snapshots keyed by FULL remote path or dest path (avoid same-name collisions)
     val transfers = remember { mutableStateMapOf<String, FileModel>() }
-
+    val REMOTE_BASE = mutableStateOf("Your server Path")
     var message by remember { mutableStateOf("Connect") }
     val fileModelList = remember { mutableStateListOf<FileModel>() }
     val listFile = remember { mutableStateListOf<UploadItem>() }
