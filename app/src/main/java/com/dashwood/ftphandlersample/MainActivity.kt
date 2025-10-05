@@ -6,7 +6,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -18,8 +17,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.*
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -35,7 +39,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val externalCacheDir = externalCacheDir  // returns File?
+
+        val externalCacheDir: File? = externalCacheDir
 
         setContent {
             FTPHandlerSampleTheme {
@@ -48,7 +53,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
 }
 
 @Composable
@@ -56,64 +60,93 @@ fun Greeting(
     externalCacheDir: File?,
     modifier: Modifier = Modifier
 ) {
+
+    // Live transfer snapshots keyed by FULL remote path or dest path (avoid same-name collisions)
     val transfers = remember { mutableStateMapOf<String, FileModel>() }
 
-    var message: String by remember { mutableStateOf("Connect") }
+    var message by remember { mutableStateOf("Connect") }
     val fileModelList = remember { mutableStateListOf<FileModel>() }
-    val ftpService = FTPService(
-        host = "",
-        port = 0,
-        username = "",
-        password = ""
-    )
+    val listFile = remember { mutableStateListOf<UploadItem>() }
+    var folderSelected by remember { mutableStateOf("/") }
+    var isUploading by remember { mutableStateOf(false) }
 
-    ftpService.setListener(object : OnFTPJobListener {
-        override fun onConnected() {
-            message = "Connected"
-            ftpService.list("/")
-            //folderList.addAll(ftpService.list("/"))
-            //ftp.list("/public_html")
-        }
+    // ✅ Create the service ONCE; never recreate across recompositions
+    val ftpService = remember {
+        FTPService(
+            host = "",
+            port = 0,
+            username = "",
+            password = ""
+        )
+    }
 
-        override fun onSuccess(action: FTPService.Action, msg: Any) {
-            if (action == FTPService.Action.LIST) {
-                fileModelList.addAll(msg as List<FileModel>)
-                return
+    // ✅ Stable listener object
+    val listener = remember {
+        object : OnFTPJobListener {
+            override fun onConnected() {
+                message = "Connected"
+                ftpService.list(folderSelected)
             }
-            message = "✅ $action -> $msg"
-        }
 
-        override fun onProgress(fileModels: List<FileModel>) {
-            // Merge snapshot into our state map
-            // Key strategy: here we use the file name; if you can have duplicates, key with full path instead.
-            val seenKeys = HashSet<String>()
-            for (fm in fileModels) {
-                val key = fm.name
-                seenKeys += key
-                transfers[key] = fm
-                println("NAME : ${fm.name} Size : ${fm.size} Progress : ${fm.bytesTransferred}")
-            }
-            // Optionally remove transfers that are not in the latest snapshot (finished)
-            transfers.keys.retainAll(seenKeys)
-        }
-
-
-        override fun onError(action: FTPService.Action, error: FTPService.FtpError) {
-            message =
-                when (error) {
-                    is FTPService.FtpError.AuthFailed -> "Authentication failed user or pass wrong"
-                    is FTPService.FtpError.PathNotFound -> "Path not found"
-                    is FTPService.FtpError.Timeout -> "Timeout"
-                    is FTPService.FtpError.Protocol -> "Having problem with protocol"
-                    is FTPService.FtpError.IO -> "Io error"
-                    is FTPService.FtpError.NotConnected -> "Not connected"
-                    is FTPService.FtpError.Unknown -> "Unknown error"
+            override fun onSuccess(action: FTPService.Action, msg: Any) {
+                if (action == FTPService.Action.LIST) {
+                    @Suppress("UNCHECKED_CAST")
+                    val list = (msg as List<FileModel>)
+                    fileModelList.clear()
+                    fileModelList.addAll(list)
+                    return
                 }
 
-        }
+                // Detect end-of-batch messages; release the UI guard
+                if (msg is String && msg.startsWith("Batch upload finished")) {
+                    isUploading = false
+                    // listFile.clear() // uncomment if you want to flush the queue after a successful batch
+                }
 
-    })
-    var folderSelected by remember { mutableStateOf("/") }
+                message = "✅ $action -> $msg"
+            }
+
+            override fun onProgress(fileModels: List<FileModel>) {
+                val seenKeys = HashSet<String>()
+                for (fm in fileModels) {
+                    // Use a strong key to avoid collisions: prefer full remote or dest path if present
+                    val key = when (fm.action) {
+                        FTPService.Action.UPLOAD -> "${folderSelected}${fm.name}"
+                        FTPService.Action.DOWNLOAD -> fm.name // dest name is OK; adjust to a full path if you track it
+                        else -> fm.name
+                    }
+                    seenKeys += key
+                    transfers[key] = fm
+                    println("NAME:${fm.name} SIZE:${fm.size} PROG:${fm.bytesTransferred}/${fm.totalBytes}")
+                }
+                // Remove finished/non-updating entries
+                transfers.keys.retainAll(seenKeys)
+            }
+
+            override fun onError(action: FTPService.Action, error: FTPService.FtpError) {
+                isUploading = false
+                message = when (error) {
+                    is FTPService.FtpError.AuthFailed -> "Authentication failed (username/password)."
+                    is FTPService.FtpError.PathNotFound -> "Path not found."
+                    is FTPService.FtpError.Timeout -> "Timeout."
+                    is FTPService.FtpError.Protocol -> "Protocol problem."
+                    is FTPService.FtpError.IO -> "I/O error."
+                    is FTPService.FtpError.NotConnected -> "Not connected."
+                    is FTPService.FtpError.Unknown -> "Unknown error."
+                }
+            }
+        }
+    }
+
+    // ✅ Attach listener once; clean up on dispose
+    DisposableEffect(Unit) {
+        ftpService.setListener(listener)
+        onDispose {
+            ftpService.setListener(null)
+            ftpService.disconnect()
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -127,30 +160,36 @@ fun Greeting(
                     }
                 }
             ) { Text(message) }
-            FilePickerSample({
-                val listFile = ArrayList<UploadItem>()
-                listFile.add(UploadItem(it, "/Path/Temp.txt"))
-                listFile.add(UploadItem(it, "/Path/Temp2.txt"))
-                listFile.add(UploadItem(it, "/Path/Temp3.txt"))
-                listFile.add(UploadItem(it, "/Path/Temp4.txt"))
-                ftpService.uploadMany(listFile)
-            })
+
+            // Pick file(s) and enqueue for upload
+            FilePickerSample { picked ->
+                listFile.add(UploadItem(picked, "$REMOTE_BASE/${picked.name}"))
+            }
+
+            // ✅ Guard: prevent double-submit while a batch is in-flight
+            Button(
+                enabled = !isUploading && listFile.isNotEmpty(),
+                onClick = {
+                    isUploading = true
+                    ftpService.uploadManySequential(listFile)
+                }
+            ) { Text(if (isUploading) "Uploading…" else "Upload") }
         }
 
-        // Your directory rows
-        items(
-            items = fileModelList,
-            key = { it.name } // if names aren’t unique, use a stronger key
-        ) { fileModel ->
-            // Find live progress (if any) for this row
-            val live = transfers[fileModel.name] // or use full path as key
+        items(items = fileModelList, key = { it.name }) { fileModel ->
+            val key = "${folderSelected}${fileModel.name}"
+            val live = transfers[key]
 
             Button(
                 modifier = Modifier.padding(5.dp),
                 onClick = {
                     when (fileModel.type) {
                         FTPService.Type.DIR -> {
-                            folderSelected += "${fileModel.name}/"
+                            folderSelected = if (folderSelected.endsWith("/")) {
+                                "$folderSelected${fileModel.name}/"
+                            } else {
+                                "$folderSelected/${fileModel.name}/"
+                            }
                             fileModelList.clear()
                             ftpService.list(folderSelected)
                         }
@@ -159,22 +198,18 @@ fun Greeting(
                             val downloads = Environment.getExternalStoragePublicDirectory(
                                 Environment.DIRECTORY_DOWNLOADS
                             )
-                            val dashwoodFolder = File(downloads, "DashWood")
-                            if (!dashwoodFolder.exists()) dashwoodFolder.mkdirs()
+                            val dashwoodFolder = File(downloads, "DashWood").apply { mkdirs() }
 
                             val remotePath = "$folderSelected${fileModel.name}"
                             val destFile = File(dashwoodFolder, fileModel.name)
 
-                            // Start RESUMABLE download; progress will flow into `onProgress`
-                            //  ftpService.downloadResumable(remotePath, destFile)
                             ftpService.downloadMany(
                                 items = listOf(DownloadItem(remotePath, destFile)),
-                                parallelism = 1 // one file in this call; you can keep >1 too
+                                parallelism = 1
                             )
                         }
 
-                        FTPService.Type.LINK -> { /* handle symlink if you want */
-                        }
+                        FTPService.Type.LINK -> Unit
                     }
                 }
             ) {
@@ -185,7 +220,6 @@ fun Greeting(
                 ) {
                     Text(text = fileModel.name)
 
-                    // Progress bar: determinate if we know total, otherwise indeterminate.
                     if (live != null) {
                         if (live.totalBytes > 0) {
                             val p = (live.bytesTransferred.toFloat() / live.totalBytes.toFloat())
@@ -194,13 +228,11 @@ fun Greeting(
                                 progress = p,
                                 modifier = Modifier.fillMaxWidth()
                             )
-                            // Optional: textual percentage
                             Text(
                                 text = "${formatBytes(live.bytesTransferred)} / ${formatBytes(live.totalBytes)}",
                                 style = MaterialTheme.typography.bodySmall
                             )
                         } else {
-                            // Unknown total size -> indeterminate
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             Text(
                                 text = "${formatBytes(live.bytesTransferred)} / ?",
@@ -214,9 +246,9 @@ fun Greeting(
     }
 }
 
+/** Human-readable formatter. */
 @Composable
 private fun formatBytes(b: Long): String {
-    // Simple human-readable formatter
     val kb = 1024.0
     val mb = kb * 1024
     val gb = mb * 1024
