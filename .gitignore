@@ -12,6 +12,9 @@
 
 # Package Files #
 *.jar
+# Allow Gradle wrapper jar
+!gradle/wrapper/gradle-wrapper.jar
+
 *.war
 *.nar
 *.ear

@@ -1,0 +1,12 @@
+jdk:
+  - 17
+
+before_install:
+  - sdk install java 17.0.14-amzn
+  - sdk use java 17.0.14-amzn
+  - export JAVA_HOME="$HOME/.sdkman/candidates/java/17.0.14-amzn"
+  - java -version
+  - ./gradlew -v
+
+install:
+  - ./gradlew -Pgroup=com.github.dashwood01 -Pversion=${VERSION} :FTPHandler:publishToMavenLocal -xlint -xtest
