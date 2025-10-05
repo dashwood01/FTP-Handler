@@ -1,5 +1,8 @@
 jdk:
   - openjdk17
 
+before_install:
+  - echo "sdk.dir=$ANDROID_HOME" >> local.properties
+
 install:
-  - ./gradlew :ftphandler:assembleRelease -x test
+  - ./gradlew :FTPHandler:clean :FTPHandler:assembleRelease -x test
