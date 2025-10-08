@@ -326,8 +326,276 @@ class FTPService(
         }
     }
 
-    // ---------------- Single-file Resumable (unchanged) ----------------
-    // (downloadResumable, uploadResumable) — your original code here unchanged…
+    // ---------------- Single-file Resumable (still emits List<FileModel>) ----------------
+
+    fun downloadResumable(
+        remotePath: String,
+        destFile: File,
+        maxRetries: Int = 3,
+        backoffMs: Long = 1500L
+    ) {
+        run(Action.DOWNLOAD) {
+            val part = File(destFile.absolutePath + ".part")
+            var attempt = 0
+
+            while (true) {
+                attempt++
+                var ftp: FTPClient? = null
+                var ins: InputStream? = null
+                var raf: RandomAccessFile? = null
+                try {
+                    ftp = newClient(); connectAndLogin(ftp); applySafeDefaults(ftp)
+
+                    val remoteSize = runCatching {
+                        ftp.listFiles(remotePath)?.firstOrNull()?.size ?: -1L
+                    }.getOrDefault(-1L)
+                    val resumeAt = (if (part.exists()) part.length() else 0L).coerceAtLeast(0L)
+
+                    if (resumeAt > 0L) ftp.setRestartOffset(resumeAt)
+                    raf = RandomAccessFile(part, "rw").apply { seek(resumeAt) }
+
+                    ins = ftp.retrieveFileStream(remotePath)
+                        ?: throw FileNotFoundException("Cannot open stream: $remotePath")
+
+                    val buf = ByteArray(bufferSize)
+                    var transferred = resumeAt
+                    val total = if (remoteSize > 0) remoteSize else -1L
+
+                    // initial tick
+                    post {
+                        listener?.onProgress(
+                            listOf(
+                                FileModel(
+                                    Type.FILE,
+                                    destFile.name,
+                                    total,
+                                    Action.DOWNLOAD,
+                                    transferred,
+                                    total
+                                )
+                            )
+                        )
+                    }
+
+                    while (true) {
+                        val n = ins.read(buf); if (n <= 0) break
+                        raf.write(buf, 0, n); transferred += n
+                        post {
+                            listener?.onProgress(
+                                listOf(
+                                    FileModel(
+                                        Type.FILE,
+                                        destFile.name,
+                                        total,
+                                        Action.DOWNLOAD,
+                                        transferred,
+                                        total
+                                    )
+                                )
+                            )
+                        }
+                    }
+                    raf.fd.sync()
+                    if (!ftp.completePendingCommand()) throw IOException("completePendingCommand failed (reply=${ftp.replyCode})")
+
+                    if (!part.renameTo(destFile)) {
+                        part.copyTo(destFile, overwrite = true); part.delete()
+                    }
+                    if (remoteSize > 0) post {
+                        listener?.onProgress(
+                            listOf(
+                                FileModel(
+                                    Type.FILE,
+                                    destFile.name,
+                                    remoteSize,
+                                    Action.DOWNLOAD,
+                                    remoteSize,
+                                    remoteSize
+                                )
+                            )
+                        )
+                    }
+                    post {
+                        listener?.onSuccess(
+                            Action.DOWNLOAD,
+                            "Downloaded: ${destFile.absolutePath}"
+                        )
+                    }
+                    return@run
+                } catch (e: FileNotFoundException) {
+                    error(Action.DOWNLOAD, FtpError.PathNotFound(remotePath, e)); return@run
+                } catch (e: SocketException) {
+                    if (attempt >= maxRetries) {
+                        error(Action.DOWNLOAD, FtpError.Timeout(e)); return@run
+                    }
+                    Thread.sleep(backoffMs * attempt)
+                } catch (e: IOException) {
+                    if (attempt >= maxRetries) {
+                        error(Action.DOWNLOAD, FtpError.IO(e)); return@run
+                    }
+                    Thread.sleep(backoffMs * attempt)
+                } catch (e: Throwable) {
+                    error(Action.DOWNLOAD, FtpError.Unknown(e)); return@run
+                } finally {
+                    try {
+                        ins?.close()
+                    } catch (_: Throwable) {
+                    }
+                    try {
+                        raf?.close()
+                    } catch (_: Throwable) {
+                    }
+                    if (ftp != null) safeLogoutDisconnect(ftp)
+                }
+            }
+        }
+    }
+
+    fun uploadResumable(
+        localFile: File,
+        remotePath: String,
+        maxRetries: Int = 3,
+        backoffMs: Long = 1500L
+    ) {
+        run(Action.UPLOAD) {
+            if (!localFile.exists() || !localFile.isFile) {
+                error(Action.UPLOAD, FtpError.PathNotFound(localFile.absolutePath)); return@run
+            }
+
+            var attempt = 0
+            while (true) {
+                attempt++
+                var ftp: FTPClient? = null
+                var fis: InputStream? = null
+                var out: OutputStream? = null
+                try {
+                    ftp = newClient(); connectAndLogin(ftp); applySafeDefaults(ftp)
+
+                    val localSize = localFile.length().coerceAtLeast(0L)
+                    val remoteSize = runCatching {
+                        ftp.listFiles(remotePath)?.firstOrNull()?.size ?: 0L
+                    }.getOrDefault(0L)
+
+                    if (remoteSize > localSize) {
+                        error(
+                            Action.UPLOAD,
+                            FtpError.Protocol(IOException("Remote larger than local"))
+                        ); return@run
+                    }
+                    if (remoteSize == localSize) {
+                        post {
+                            listener?.onProgress(
+                                listOf(
+                                    FileModel(
+                                        Type.FILE,
+                                        File(remotePath).name,
+                                        localSize,
+                                        Action.UPLOAD,
+                                        localSize,
+                                        localSize
+                                    )
+                                )
+                            )
+                        }
+                        post { listener?.onSuccess(Action.UPLOAD, "Already uploaded: $remotePath") }
+                        return@run
+                    }
+
+                    fis = BufferedInputStream(FileInputStream(localFile), bufferSize)
+                    skipFully(fis, remoteSize)
+                    if (remoteSize > 0L) ftp.setRestartOffset(remoteSize)
+
+                    out = ftp.storeFileStream(remotePath)
+                        ?: throw IOException("storeFileStream failed (reply=${ftp.replyCode})")
+
+                    val buf = ByteArray(bufferSize)
+                    var transferred = remoteSize
+                    val total = localSize
+
+                    // initial tick
+                    post {
+                        listener?.onProgress(
+                            listOf(
+                                FileModel(
+                                    Type.FILE,
+                                    File(remotePath).name,
+                                    total,
+                                    Action.UPLOAD,
+                                    transferred,
+                                    total
+                                )
+                            )
+                        )
+                    }
+
+                    while (true) {
+                        val n = fis.read(buf); if (n <= 0) break
+                        out.write(buf, 0, n); transferred += n
+                        post {
+                            listener?.onProgress(
+                                listOf(
+                                    FileModel(
+                                        Type.FILE,
+                                        File(remotePath).name,
+                                        total,
+                                        Action.UPLOAD,
+                                        transferred,
+                                        total
+                                    )
+                                )
+                            )
+                        }
+                    }
+                    out.flush()
+                    if (!ftp.completePendingCommand()) throw IOException("completePendingCommand failed (reply=${ftp.replyCode})")
+
+                    post {
+                        listener?.onProgress(
+                            listOf(
+                                FileModel(
+                                    Type.FILE,
+                                    File(remotePath).name,
+                                    total,
+                                    Action.UPLOAD,
+                                    total,
+                                    total
+                                )
+                            )
+                        )
+                    }
+                    post { listener?.onSuccess(Action.UPLOAD, "Uploaded: $remotePath") }
+                    return@run
+                } catch (e: FileNotFoundException) {
+                    error(
+                        Action.UPLOAD,
+                        FtpError.PathNotFound(localFile.absolutePath, e)
+                    ); return@run
+                } catch (e: SocketException) {
+                    if (attempt >= maxRetries) {
+                        error(Action.UPLOAD, FtpError.Timeout(e)); return@run
+                    }
+                    Thread.sleep(backoffMs * attempt)
+                } catch (e: IOException) {
+                    if (attempt >= maxRetries) {
+                        error(Action.UPLOAD, FtpError.IO(e)); return@run
+                    }
+                    Thread.sleep(backoffMs * attempt)
+                } catch (e: Throwable) {
+                    error(Action.UPLOAD, FtpError.Unknown(e)); return@run
+                } finally {
+                    try {
+                        out?.close()
+                    } catch (_: Throwable) {
+                    }
+                    try {
+                        fis?.close()
+                    } catch (_: Throwable) {
+                    }
+                    if (ftp != null) safeLogoutDisconnect(ftp)
+                }
+            }
+        }
+    }
 
     // ---------------- Multi (resumable + per-file snapshots) ----------------
 
@@ -537,21 +805,38 @@ class FTPService(
                             val localSize = item.local.length().coerceAtLeast(0L)
                             if (localSize <= 0L) throw FileNotFoundException("Empty/missing: ${item.local.absolutePath}")
 
-                            val remoteSize = runCatching { ftp.listFiles(item.remotePath)?.firstOrNull()?.size ?: 0L }
+                            val remoteSize = runCatching {
+                                ftp.listFiles(item.remotePath)?.firstOrNull()?.size ?: 0L
+                            }
                                 .getOrDefault(0L)
                             if (remoteSize > localSize) throw IOException("Remote larger than local")
 
                             var transferred = remoteSize
                             val name = File(item.remotePath).name
-                            progressMap[item.remotePath] = FileModel(Type.FILE, name, localSize, Action.UPLOAD, transferred, localSize)
+                            progressMap[item.remotePath] = FileModel(
+                                Type.FILE,
+                                name,
+                                localSize,
+                                Action.UPLOAD,
+                                transferred,
+                                localSize
+                            )
                             postProgressSnapshot()
 
                             if (remoteSize == localSize) {
-                                post { listener?.onSuccess(Action.UPLOAD, "Already uploaded: ${item.remotePath}") }
+                                post {
+                                    listener?.onSuccess(
+                                        Action.UPLOAD,
+                                        "Already uploaded: ${item.remotePath}"
+                                    )
+                                }
                                 break
                             }
 
-                            BufferedInputStream(FileInputStream(item.local), bufferSize).use { fis ->
+                            BufferedInputStream(
+                                FileInputStream(item.local),
+                                bufferSize
+                            ).use { fis ->
                                 // رزومه
                                 skipFully(fis, remoteSize)
                                 if (remoteSize > 0L) ftp.setRestartOffset(remoteSize)
@@ -564,7 +849,14 @@ class FTPService(
                                     while (true) {
                                         val n = fis.read(buf); if (n <= 0) break
                                         o.write(buf, 0, n); transferred += n
-                                        progressMap[item.remotePath] = FileModel(Type.FILE, name, localSize, Action.UPLOAD, transferred, localSize)
+                                        progressMap[item.remotePath] = FileModel(
+                                            Type.FILE,
+                                            name,
+                                            localSize,
+                                            Action.UPLOAD,
+                                            transferred,
+                                            localSize
+                                        )
                                         postProgressSnapshot()
                                     }
                                 }
@@ -572,23 +864,55 @@ class FTPService(
                                 if (!ftp.completePendingCommand()) throw IOException("completePendingCommand failed (reply=${ftp!!.replyCode})")
                             }
 
-                            progressMap[item.remotePath] = FileModel(Type.FILE, name, localSize, Action.UPLOAD, localSize, localSize)
+                            progressMap[item.remotePath] = FileModel(
+                                Type.FILE,
+                                name,
+                                localSize,
+                                Action.UPLOAD,
+                                localSize,
+                                localSize
+                            )
                             postProgressSnapshot()
-                            post { listener?.onSuccess(Action.UPLOAD, "Uploaded: ${item.remotePath}") }
+                            post {
+                                listener?.onSuccess(
+                                    Action.UPLOAD,
+                                    "Uploaded: ${item.remotePath}"
+                                )
+                            }
                             break
                         } catch (e: SocketException) {
-                            if (attempt >= maxRetriesPerFile) { post { listener?.onError(Action.UPLOAD, FtpError.Timeout(e)) }; break }
+                            if (attempt >= maxRetriesPerFile) {
+                                post {
+                                    listener?.onError(
+                                        Action.UPLOAD,
+                                        FtpError.Timeout(e)
+                                    )
+                                }; break
+                            }
                             Thread.sleep(backoffMs * attempt)
                             // اتصال خراب شد؟ پاک و از نو بساز
-                            try { if (ftp != null) safeLogoutDisconnect(ftp) } catch (_: Throwable) {}
+                            try {
+                                if (ftp != null) safeLogoutDisconnect(ftp)
+                            } catch (_: Throwable) {
+                            }
                             ftp = null
                         } catch (e: FileNotFoundException) {
-                            post { listener?.onError(Action.UPLOAD, FtpError.PathNotFound(item.local.absolutePath, e)) }
+                            post {
+                                listener?.onError(
+                                    Action.UPLOAD,
+                                    FtpError.PathNotFound(item.local.absolutePath, e)
+                                )
+                            }
                             break
                         } catch (e: IOException) {
-                            if (attempt >= maxRetriesPerFile) { post { listener?.onError(Action.UPLOAD, FtpError.IO(e)) }; break }
+                            if (attempt >= maxRetriesPerFile) {
+                                post { listener?.onError(Action.UPLOAD, FtpError.IO(e)) }; break
+                            }
                             Thread.sleep(backoffMs * attempt)
-                            try { if (ftp != null) safeLogoutDisconnect(ftp) } catch (_: Throwable) {}
+                            try {
+                                if (ftp != null) safeLogoutDisconnect(ftp)
+                            } catch (_: Throwable) {
+                            }
                             ftp = null
                         } catch (e: Throwable) {
                             post { listener?.onError(Action.UPLOAD, FtpError.Unknown(e)) }
@@ -601,7 +925,12 @@ class FTPService(
                     postProgressSnapshot()
                 }
 
-                post { listener?.onSuccess(Action.UPLOAD, "Batch upload finished: ${items.size}/${items.size} files (sequential).") }
+                post {
+                    listener?.onSuccess(
+                        Action.UPLOAD,
+                        "Batch upload finished: ${items.size}/${items.size} files (sequential)."
+                    )
+                }
             } finally {
 
             }
