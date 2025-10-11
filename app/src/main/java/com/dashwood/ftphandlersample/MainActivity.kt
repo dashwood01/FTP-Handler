@@ -63,7 +63,10 @@ fun Greeting(
 
     // Live transfer snapshots keyed by FULL remote path or dest path (avoid same-name collisions)
     val transfers = remember { mutableStateMapOf<String, FileModel>() }
-    val REMOTE_BASE = remember { mutableStateOf("Your server Path") }
+    val REMOTE_BASE =
+        remember { mutableStateOf("Path of the file on ftp") }
+    val downFolder = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+    val desFile = File(downFolder.absolutePath + "/" + "Temp.apk")
     var message by remember { mutableStateOf("Connect") }
     val fileModelList = remember { mutableStateListOf<FileModel>() }
     val listFile = remember { mutableStateListOf<UploadItem>() }
@@ -73,10 +76,10 @@ fun Greeting(
     // ✅ Create the service ONCE; never recreate across recompositions
     val ftpService = remember {
         FTPService(
-            host = "",
+            host = "host",
             port = 0,
-            username = "",
-            password = ""
+            username = "username",
+            password = "password"
         )
     }
 
@@ -162,16 +165,17 @@ fun Greeting(
             ) { Text(message) }
 
             // Pick file(s) and enqueue for upload
-            FilePickerSample { picked ->
+            /*FilePickerSample { picked ->
                 listFile.add(UploadItem(picked, "$REMOTE_BASE/${picked.name}"))
-            }
-
+            }*/
             // ✅ Guard: prevent double-submit while a batch is in-flight
             Button(
-                enabled = !isUploading && listFile.isNotEmpty(),
+                // enabled = !isUploading && listFile.isNotEmpty(),
                 onClick = {
-                    isUploading = true
-                    ftpService.uploadManySequential(listFile)
+                    //isUploading = true
+                    //ftpService.uploadManySequential(listFile)
+                    ftpService.download(REMOTE_BASE.value, desFile)
+
                 }
             ) { Text(if (isUploading) "Uploading…" else "Upload") }
         }

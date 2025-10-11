@@ -246,9 +246,17 @@ class FTPService(
         run(Action.DOWNLOAD) {
             val ftp = requireConnected(Action.DOWNLOAD) ?: return@run
             val size = runCatching {
-                ftp.listFiles(remotePath)?.firstOrNull()?.size ?: -1L
+                val mFile = ftp.mlistFile(remotePath)
+                if (mFile != null) {
+                    mFile.size
+                } else {
+                    val parentPath = remotePath.substringBeforeLast('/')
+                    val fileName = remotePath.substringAfterLast('/')
+                    ftp.listFiles(parentPath)
+                        ?.firstOrNull { it.name == fileName }
+                        ?.size ?: -1L
+                }
             }.getOrDefault(-1L)
-
             var out: BufferedOutputStream? = null
             var inStream: InputStream? = null
             try {
@@ -347,11 +355,17 @@ class FTPService(
                     ftp = newClient(); connectAndLogin(ftp); applySafeDefaults(ftp)
 
                     val remoteSize = runCatching {
-                        ftp.listFiles(remotePath)?.firstOrNull()?.size ?: -1L
+                        val parentPath = remotePath.substringBeforeLast('/')
+                        val fileName = remotePath.substringAfterLast('/')
+
+                        ftp.listFiles(parentPath)
+                            ?.firstOrNull { it.name == fileName }
+                            ?.size ?: -1L
                     }.getOrDefault(-1L)
+
                     val resumeAt = (if (part.exists()) part.length() else 0L).coerceAtLeast(0L)
 
-                    if (resumeAt > 0L) ftp.setRestartOffset(resumeAt)
+                    if (resumeAt > 0L) ftp.restartOffset = resumeAt
                     raf = RandomAccessFile(part, "rw").apply { seek(resumeAt) }
 
                     ins = ftp.retrieveFileStream(remotePath)
@@ -1149,6 +1163,7 @@ class FTPService(
             } catch (e: IOException) {
                 error(action, FtpError.IO(e))
             } catch (e: Throwable) {
+                e.printStackTrace()
                 error(action, FtpError.Unknown(e))
             }
         }
