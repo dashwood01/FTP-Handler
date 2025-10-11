@@ -257,6 +257,15 @@ class FTPService(
                         ?.size ?: -1L
                 }
             }.getOrDefault(-1L)
+            if (destFile.exists())
+                if (size == destFile.length()) {
+                    println("Downloaded")
+                    listener?.onSuccess(
+                        Action.DOWNLOAD,
+                        "Downloaded: ${destFile.absolutePath}"
+                    )
+                    return@run
+                }
             var out: BufferedOutputStream? = null
             var inStream: InputStream? = null
             try {
@@ -318,6 +327,7 @@ class FTPService(
             } catch (e: SocketException) {
                 error(Action.DOWNLOAD, FtpError.Timeout(e))
             } catch (e: FileNotFoundException) {
+                e.printStackTrace()
                 error(Action.DOWNLOAD, FtpError.PathNotFound(remotePath, e))
             } catch (e: IOException) {
                 error(Action.DOWNLOAD, FtpError.IO(e))
