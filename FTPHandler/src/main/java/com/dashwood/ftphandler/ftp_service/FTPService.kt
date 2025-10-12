@@ -16,6 +16,7 @@ import com.dashwood.ftphandler.listener.OnFTPJobListener
 import com.dashwood.ftphandler.model.FileModel
 import com.dashwood.ftphandler.models.DownloadItem
 import com.dashwood.ftphandler.models.UploadItem
+import org.apache.commons.net.io.CopyStreamEvent
 import javax.net.ssl.SSLContext
 
 /**
@@ -43,6 +44,7 @@ class FTPService(
         data class IO(override val cause: Throwable? = null) : FtpError(cause)
         data class Timeout(override val cause: Throwable? = null) : FtpError(cause)
         data class Protocol(override val cause: Throwable? = null) : FtpError(cause)
+        data class MismatchSize(override val cause: Throwable? = null) : FtpError(cause)
         data class Unknown(override val cause: Throwable? = null) : FtpError(cause)
     }
 
@@ -57,6 +59,7 @@ class FTPService(
 
     /** ✅ Tracks active upload batch signatures to ignore duplicate calls */
     private val activeBatchSignatures = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var tryDownloaded: Int = 0
 
     fun setListener(l: OnFTPJobListener?) = apply { listener = l }
 
@@ -242,77 +245,105 @@ class FTPService(
         }
     }
 
-    fun download(remotePath: String, destFile: File) {
+    fun download(remotePath: String, destFile: File, tryDownload: Int = 0) {
         run(Action.DOWNLOAD) {
             val ftp = requireConnected(Action.DOWNLOAD) ?: return@run
-            val size = runCatching {
-                val mFile = ftp.mlistFile(remotePath)
-                if (mFile != null) {
-                    mFile.size
+            runCatching {
+                ftp.enterLocalPassiveMode()
+                ftp.setFileType(FTP.BINARY_FILE_TYPE)
+                ftp.setFileTransferMode(FTP.STREAM_TRANSFER_MODE)
+                ftp.bufferSize = bufferSize
+            }
+            val remoteSize = runCatching {
+                val code = ftp.sendCommand("SIZE", remotePath)
+                if (org.apache.commons.net.ftp.FTPReply.isPositiveCompletion(code)) {
+                    val line = ftp.replyString.orEmpty()
+                    Regex("""\d+""").findAll(line).lastOrNull()?.value?.toLongOrNull() ?: -1L
                 } else {
-                    val parentPath = remotePath.substringBeforeLast('/')
-                    val fileName = remotePath.substringAfterLast('/')
-                    ftp.listFiles(parentPath)
-                        ?.firstOrNull { it.name == fileName }
-                        ?.size ?: -1L
+                    ftp.mlistFile(remotePath)?.size ?: run {
+                        val parent = remotePath.substringBeforeLast('/', "")
+                        val name = remotePath.substringAfterLast('/')
+                        val list =
+                            if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
+                        list?.firstOrNull { it.name == name }?.size ?: -1L
+                    }
                 }
             }.getOrDefault(-1L)
-            if (destFile.exists())
-                if (size == destFile.length()) {
-                    println("Downloaded")
+
+            if (destFile.exists() && remoteSize > 0 && destFile.length() == remoteSize) {
+                post {
                     listener?.onSuccess(
                         Action.DOWNLOAD,
                         "Downloaded: ${destFile.absolutePath}"
                     )
-                    return@run
                 }
-            var out: BufferedOutputStream? = null
-            var inStream: InputStream? = null
-            try {
-                out = BufferedOutputStream(FileOutputStream(destFile, false), bufferSize)
-                val tmp = ByteArray(bufferSize)
-                var transferred = 0L
+                return@run
+            }
+            val totalForProgress = if (remoteSize > 0) remoteSize else -1L
+            ftp.copyStreamListener = object : org.apache.commons.net.io.CopyStreamListener {
+                override fun bytesTransferred(event: CopyStreamEvent?) {
+                    TODO("Not yet implemented")
+                }
 
-                inStream = ftp.retrieveFileStream(remotePath)
-                    ?: throw FileNotFoundException("Remote not found or cannot open stream: $remotePath")
-
-                while (true) {
-                    val n = inStream.read(tmp); if (n <= 0) break
-                    out.write(tmp, 0, n); transferred += n
-
-                    val total = if (size > 0) size else -1L
+                override fun bytesTransferred(
+                    totalBytesTransferred: Long,
+                    bytesTransferred: Int,
+                    streamSize: Long
+                ) {
                     post {
                         listener?.onProgress(
                             listOf(
                                 FileModel(
                                     Type.FILE,
                                     destFile.name,
-                                    total,
+                                    totalForProgress,
                                     Action.DOWNLOAD,
-                                    transferred,
-                                    total
+                                    totalBytesTransferred,
+                                    totalForProgress
                                 )
                             )
                         )
                     }
                 }
-                out.flush()
+            }
 
-                if (!ftp.completePendingCommand()) {
-                    error(Action.DOWNLOAD, FtpError.Protocol()); return@run
+            var fos: FileOutputStream? = null
+            var bos: BufferedOutputStream? = null
+            try {
+                fos = FileOutputStream(destFile, /*append*/ false)
+                bos = BufferedOutputStream(fos, bufferSize)
+                val ok = ftp.retrieveFile(remotePath, bos)
+                runCatching { bos.flush() }
+                runCatching { fos.fd.sync() }
+
+                if (!ok) {
+                    error(Action.DOWNLOAD, FtpError.Protocol())
+                    return@run
                 }
-
-                if (size > 0) {
+                if (remoteSize > 0) {
+                    val localLen = destFile.length()
+                    if (localLen != remoteSize) {
+                        if (tryDownload != 0 && tryDownloaded < tryDownload) {
+                            tryDownloaded++
+                            download(remotePath, destFile, tryDownload)
+                            return@run
+                        }
+                        listener?.onError(
+                            Action.DOWNLOAD, FtpError.MismatchSize(
+                                Throwable("SIZE mismatch (server=$remoteSize, local=$localLen).")
+                            )
+                        )
+                    }
                     post {
                         listener?.onProgress(
                             listOf(
                                 FileModel(
                                     Type.FILE,
                                     destFile.name,
-                                    size,
+                                    remoteSize,
                                     Action.DOWNLOAD,
-                                    size,
-                                    size
+                                    localLen.coerceAtMost(remoteSize),
+                                    remoteSize
                                 )
                             )
                         )
@@ -324,22 +355,23 @@ class FTPService(
                         "Downloaded: ${destFile.absolutePath}"
                     )
                 }
+
             } catch (e: SocketException) {
                 error(Action.DOWNLOAD, FtpError.Timeout(e))
             } catch (e: FileNotFoundException) {
-                e.printStackTrace()
                 error(Action.DOWNLOAD, FtpError.PathNotFound(remotePath, e))
             } catch (e: IOException) {
                 error(Action.DOWNLOAD, FtpError.IO(e))
             } finally {
                 try {
-                    inStream?.close()
+                    bos?.close()
                 } catch (_: Throwable) {
                 }
                 try {
-                    out?.close()
+                    fos?.close()
                 } catch (_: Throwable) {
                 }
+                ftp.copyStreamListener = null
             }
         }
     }

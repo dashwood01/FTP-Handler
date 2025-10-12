@@ -64,9 +64,10 @@ fun Greeting(
     // Live transfer snapshots keyed by FULL remote path or dest path (avoid same-name collisions)
     val transfers = remember { mutableStateMapOf<String, FileModel>() }
     val REMOTE_BASE =
-        remember { mutableStateOf("Path of the file on ftp") }
+        remember { mutableStateOf("Your path in ftp server") }
     val downFolder = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-    val desFile = File(downFolder.absolutePath + "/" + "Temp.apk")
+    val desFile =
+        File(downFolder.absolutePath + "/" + "Temp.rar")
     var message by remember { mutableStateOf("Connect") }
     val fileModelList = remember { mutableStateListOf<FileModel>() }
     val listFile = remember { mutableStateListOf<UploadItem>() }
@@ -78,8 +79,8 @@ fun Greeting(
         FTPService(
             host = "host",
             port = 0,
-            username = "username",
-            password = "password"
+            username = "user",
+            password = "pass"
         )
     }
 
@@ -135,6 +136,7 @@ fun Greeting(
                     is FTPService.FtpError.Protocol -> "Protocol problem."
                     is FTPService.FtpError.IO -> "I/O error."
                     is FTPService.FtpError.NotConnected -> "Not connected."
+                    is FTPService.FtpError.MismatchSize -> "Download or Upload file doesn't full size"
                     is FTPService.FtpError.Unknown -> "Unknown error."
                 }
             }
@@ -174,7 +176,7 @@ fun Greeting(
                 onClick = {
                     //isUploading = true
                     //ftpService.uploadManySequential(listFile)
-                    ftpService.download(REMOTE_BASE.value, desFile)
+                    ftpService.download(REMOTE_BASE.value, desFile, 3)
 
                 }
             ) { Text(if (isUploading) "Uploading…" else "Upload") }
