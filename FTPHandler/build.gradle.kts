@@ -32,7 +32,7 @@ publishing {
         register<MavenPublication>("release") {
             groupId = "com.github.dashwood01"
             artifactId = "FTP-Handler"
-            version = "0.3.4"
+            version = "0.3.5"
             afterEvaluate { from(components["release"]) }
         }
     }
