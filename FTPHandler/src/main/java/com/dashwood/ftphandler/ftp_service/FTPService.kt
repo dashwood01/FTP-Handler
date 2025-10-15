@@ -18,6 +18,7 @@ import com.dashwood.ftphandler.models.DownloadItem
 import com.dashwood.ftphandler.models.UploadItem
 import org.apache.commons.net.ftp.FTPReply
 import org.apache.commons.net.io.CopyStreamEvent
+import java.nio.charset.Charset
 import javax.net.ssl.SSLContext
 
 /**
@@ -69,7 +70,80 @@ class FTPService(
         post { listener?.onProgress(snapshot) }
     }
 
+    private enum class PathEncodingMode {
+        /** Server really understands UTF-8 (OPTS UTF8 ON / FEAT UTF8). */
+        NATIVE_UTF8,
+
+        /** Send UTF-8 bytes but wrap them into ISO-8859-1 Java String (legacy trick). */
+        UTF8_OVER_ISO_8859_1,
+
+        /** Server is truly Windows-1256. */
+        WINDOWS_1256
+    }
+
+    @Volatile
+    private var pathMode: PathEncodingMode = PathEncodingMode.NATIVE_UTF8
+
+    private fun utf8OverIso88591(s: String): String =
+        String(s.toByteArray(Charsets.UTF_8), Charsets.ISO_8859_1)
+
+    private fun windows1256FromUtf8(s: String): String =
+        String(s.toByteArray(Charsets.UTF_8), Charset.forName("Windows-1256"))
+
+    /**
+     * Encode EVERY path segment (dir + filename).
+     * This is the most robust option when directories may contain non-ASCII characters.
+     */
+    fun encAll(fullPath: String): String {
+        if (fullPath.isEmpty()) return fullPath
+        val sb = StringBuilder(fullPath.length + 8)
+        var i = 0
+        while (i < fullPath.length) {
+            val j = fullPath.indexOf('/', i)
+            val seg = if (j >= 0) fullPath.substring(i, j) else fullPath.substring(i)
+            val encSeg = when (pathMode) {
+                PathEncodingMode.NATIVE_UTF8 -> seg
+                PathEncodingMode.UTF8_OVER_ISO_8859_1 -> utf8OverIso88591(seg)
+                PathEncodingMode.WINDOWS_1256 -> windows1256FromUtf8(seg)
+            }
+            sb.append(encSeg)
+            if (j >= 0) sb.append('/')
+            if (j < 0) break
+            i = j + 1
+        }
+        return sb.toString()
+    }
+
+
     // ---------------- Connection ----------------
+
+    @Throws(IOException::class)
+    private fun configureEncoding(ftp: FTPClient) {
+        // 1) Try native UTF-8 first
+        try {
+            ftp.autodetectUTF8 = true
+        } catch (_: Throwable) {
+        }
+        ftp.controlEncoding = "UTF-8"
+        try {
+            ftp.sendCommand("OPTS", "UTF8 ON")
+        } catch (_: Throwable) {
+        }
+
+        val utf8Supported = try { ftp.hasFeature("UTF8") } catch (_: Throwable) { false }
+        if (utf8Supported) {
+            pathMode = PathEncodingMode.NATIVE_UTF8
+            return
+        }
+
+        // 2) Fallback: tunnel UTF-8 through ISO-8859-1 (very effective on many legacy servers)
+        ftp.controlEncoding = "ISO-8859-1"
+        pathMode = PathEncodingMode.UTF8_OVER_ISO_8859_1
+
+        // 3) If you KNOW your server is Windows-1256 only, flip these two lines instead:
+        // ftp.controlEncoding = "Windows-1256"
+        // pathMode = PathEncodingMode.WINDOWS_1256
+    }
 
     fun connect() {
         run(Action.CONNECT) {
@@ -77,6 +151,7 @@ class FTPService(
             client = ftp
             connectAndLogin(ftp)
             applySafeDefaults(ftp)
+            configureEncoding(ftp)
             post { listener?.onConnected() }
             post { listener?.onSuccess(Action.CONNECT, "Connected to $host:$port") }
         }
@@ -273,7 +348,8 @@ class FTPService(
                     ftp.mlistFile(remotePath)?.size ?: run {
                         val parent = remotePath.substringBeforeLast('/', "")
                         val name = remotePath.substringAfterLast('/')
-                        val list = if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
+                        val list =
+                            if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
                         list?.firstOrNull { it.name == name }?.size ?: -1L
                     }
                 }
@@ -284,11 +360,11 @@ class FTPService(
                 val resp = ftp.getModificationTime(remotePath) ?: return@runCatching -1L
                 val nums = Regex("""\d{14}""").find(resp)?.value ?: return@runCatching -1L
                 val year = nums.substring(0, 4).toInt()
-                val mon  = nums.substring(4, 6).toInt()
-                val day  = nums.substring(6, 8).toInt()
+                val mon = nums.substring(4, 6).toInt()
+                val day = nums.substring(6, 8).toInt()
                 val hour = nums.substring(8, 10).toInt()
-                val min  = nums.substring(10, 12).toInt()
-                val sec  = nums.substring(12, 14).toInt()
+                val min = nums.substring(10, 12).toInt()
+                val sec = nums.substring(12, 14).toInt()
                 java.time.ZonedDateTime.of(
                     year, mon, day, hour, min, sec, 0,
                     java.time.ZoneOffset.UTC
@@ -319,7 +395,9 @@ class FTPService(
             // --- Progress wiring (same semantics as your Java listener) ---
             val totalForProgress = if (remoteSize > 0) remoteSize else -1L
             ftp.copyStreamListener = object : org.apache.commons.net.io.CopyStreamListener {
-                override fun bytesTransferred(event: CopyStreamEvent?) { /* no-op */ }
+                override fun bytesTransferred(event: CopyStreamEvent?) { /* no-op */
+                }
+
                 override fun bytesTransferred(
                     totalBytesTransferred: Long,
                     bytesTransferred: Int,
@@ -357,9 +435,12 @@ class FTPService(
 
                 if (!downloaded) {
                     val replyCode = ftp.replyCode
-                    val replyMsg  = ftp.replyString.orEmpty()
+                    val replyMsg = ftp.replyString.orEmpty()
                     // Match your error typing
-                    error(Action.DOWNLOAD, FtpError.Protocol(Throwable("FTP download failed. Code: $replyCode | Message: $replyMsg")))
+                    error(
+                        Action.DOWNLOAD,
+                        FtpError.Protocol(Throwable("FTP download failed. Code: $replyCode | Message: $replyMsg"))
+                    )
                     return@run
                 }
 
@@ -434,7 +515,12 @@ class FTPService(
             }.getOrDefault(-1L)
 
             if (destFile.exists() && remoteSize > 0 && kotlin.math.abs(destFile.length() - remoteSize) <= 1) {
-                post { listener?.onSuccess(Action.DOWNLOAD, "Downloaded: ${destFile.absolutePath}") }
+                post {
+                    listener?.onSuccess(
+                        Action.DOWNLOAD,
+                        "Downloaded: ${destFile.absolutePath}"
+                    )
+                }
                 return@run
             }
             val totalForProgress = if (remoteSize > 0) remoteSize else -1L
@@ -553,7 +639,10 @@ class FTPService(
                 var ins: InputStream? = null
                 var raf: RandomAccessFile? = null
                 try {
-                    ftp = newClient(); connectAndLogin(ftp); applySafeDefaults(ftp)
+                    ftp =
+                        newClient(); connectAndLogin(ftp); applySafeDefaults(ftp); configureEncoding(
+                        ftp
+                    )
 
                     val remoteSize = runCatching {
                         val parentPath = remotePath.substringBeforeLast('/')
@@ -684,7 +773,10 @@ class FTPService(
                 var fis: InputStream? = null
                 var out: OutputStream? = null
                 try {
-                    ftp = newClient(); connectAndLogin(ftp); applySafeDefaults(ftp)
+                    ftp =
+                        newClient(); connectAndLogin(ftp); applySafeDefaults(ftp);configureEncoding(
+                        ftp
+                    )
 
                     val localSize = localFile.length().coerceAtLeast(0L)
                     val remoteSize = runCatching {
@@ -862,7 +954,10 @@ class FTPService(
 
                     try {
 
-                        ftp = newClient(); connectAndLogin(ftp); applySafeDefaults(ftp)
+                        ftp =
+                            newClient(); connectAndLogin(ftp); applySafeDefaults(ftp);configureEncoding(
+                            ftp
+                        )
 
                         val localSize = item.local.length().coerceAtLeast(0L)
                         if (localSize <= 0L) throw FileNotFoundException("Empty/missing: ${item.local.absolutePath}")
@@ -1001,6 +1096,7 @@ class FTPService(
                     ftp = newClient()
                     connectAndLogin(ftp!!)
                     applySafeDefaults(ftp!!)
+                    configureEncoding(ftp)
                     client = ftp
                     post { listener?.onConnected() }
                 }
@@ -1014,6 +1110,7 @@ class FTPService(
                                 ftp = newClient()
                                 connectAndLogin(ftp)
                                 applySafeDefaults(ftp)
+                                configureEncoding(ftp)
                                 client = ftp
                             }
 
@@ -1179,7 +1276,10 @@ class FTPService(
                     var raf: RandomAccessFile? = null
 
                     try {
-                        ftp = newClient(); connectAndLogin(ftp); applySafeDefaults(ftp)
+                        ftp =
+                            newClient(); connectAndLogin(ftp); applySafeDefaults(ftp);configureEncoding(
+                            ftp
+                        )
 
                         val remoteSize = runCatching {
                             ftp.listFiles(item.remotePath)?.firstOrNull()?.size ?: -1L

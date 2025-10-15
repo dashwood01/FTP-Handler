@@ -64,7 +64,7 @@ fun Greeting(
     // Live transfer snapshots keyed by FULL remote path or dest path (avoid same-name collisions)
     val transfers = remember { mutableStateMapOf<String, FileModel>() }
     val REMOTE_BASE =
-        remember { mutableStateOf("Your path in ftp server") }
+        remember { mutableStateOf("/Projects/Android/Test_Ftp") }
     val downFolder = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
     val desFile =
         File(downFolder.absolutePath + "/" + "Temp.rar")
@@ -77,10 +77,10 @@ fun Greeting(
     // ✅ Create the service ONCE; never recreate across recompositions
     val ftpService = remember {
         FTPService(
-            host = "host",
-            port = 0,
-            username = "user",
-            password = "pass"
+            host = "workspace.oscaret.com",
+            port = 2100,
+            username = "ftpsepehrandroid",
+            password = "FTPSep@And!14"
         )
     }
 
@@ -129,6 +129,7 @@ fun Greeting(
 
             override fun onError(action: FTPService.Action, error: FTPService.FtpError) {
                 isUploading = false
+                println(error)
                 message = when (error) {
                     is FTPService.FtpError.AuthFailed -> "Authentication failed (username/password)."
                     is FTPService.FtpError.PathNotFound -> "Path not found."
@@ -167,16 +168,23 @@ fun Greeting(
             ) { Text(message) }
 
             // Pick file(s) and enqueue for upload
-            /*FilePickerSample { picked ->
-                listFile.add(UploadItem(picked, "$REMOTE_BASE/${picked.name}"))
-            }*/
+            FilePickerSample { picked ->
+
+                listFile.add(
+                    UploadItem(
+                        picked,
+                        ftpService.encAll("${REMOTE_BASE.value}/Factor_main - 114 - 1760514468683 - سلام درخشان زندگیئ خرء دنیاؤ فان.jpg")
+                    )
+                )
+                println("${REMOTE_BASE.value}سلام درخشانً زندگیئ خرء دنیاؤ فانِ/.jpg")
+            }
             // ✅ Guard: prevent double-submit while a batch is in-flight
             Button(
-                // enabled = !isUploading && listFile.isNotEmpty(),
+                enabled = !isUploading && listFile.isNotEmpty(),
                 onClick = {
-                    //isUploading = true
-                    //ftpService.uploadManySequential(listFile)
-                    ftpService.download(REMOTE_BASE.value, desFile, 3)
+                    isUploading = true
+                    ftpService.uploadManySequential(listFile)
+                    //ftpService.download(REMOTE_BASE.value, desFile, true)
 
                 }
             ) { Text(if (isUploading) "Uploading…" else "Upload") }
