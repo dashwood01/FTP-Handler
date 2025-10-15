@@ -130,11 +130,11 @@ class FTPService(
         } catch (_: Throwable) {
         }
 
-       /* val utf8Supported = try { ftp.hasFeature("UTF8") } catch (_: Throwable) { false }
-        if (utf8Supported) {
-            pathMode = PathEncodingMode.NATIVE_UTF8
-            return
-        }*/
+        /* val utf8Supported = try { ftp.hasFeature("UTF8") } catch (_: Throwable) { false }
+         if (utf8Supported) {
+             pathMode = PathEncodingMode.NATIVE_UTF8
+             return
+         }*/
 
         // 2) Fallback: tunnel UTF-8 through ISO-8859-1 (very effective on many legacy servers)
         ftp.controlEncoding = "ISO-8859-1"
@@ -225,12 +225,12 @@ class FTPService(
         run(Action.DELETE) {
             val ftp = requireConnected(Action.DELETE) ?: return@run
             val ok = try {
-                ftp.deleteFile(remotePath)
+                ftp.deleteFile(encAll(remotePath))
             } catch (e: IOException) {
                 error(Action.DELETE, FtpError.IO(e)); return@run
             }
-            if (!ok) error(Action.DELETE, FtpError.PathNotFound(remotePath))
-            else post { listener?.onSuccess(Action.DELETE, "Deleted: $remotePath") }
+            if (!ok) error(Action.DELETE, FtpError.PathNotFound(encAll(remotePath)))
+            else post { listener?.onSuccess(Action.DELETE, "Deleted: ${encAll(remotePath)}") }
         }
     }
 
@@ -272,7 +272,7 @@ class FTPService(
                                     listOf(
                                         FileModel(
                                             Type.FILE,
-                                            File(remotePath).name,
+                                            File(encAll(remotePath)).name,
                                             total,
                                             Action.UPLOAD,
                                             transferred,
@@ -286,7 +286,7 @@ class FTPService(
                     }
                 }
 
-                val ok = ftp.storeFile(remotePath, progressStream)
+                val ok = ftp.storeFile(encAll(remotePath), progressStream)
                 if (!ok) {
                     error(Action.UPLOAD, FtpError.Protocol()); return@run
                 }
@@ -296,7 +296,7 @@ class FTPService(
                         listOf(
                             FileModel(
                                 Type.FILE,
-                                File(remotePath).name,
+                                File(encAll(remotePath)).name,
                                 total,
                                 Action.UPLOAD,
                                 total,
@@ -305,7 +305,7 @@ class FTPService(
                         )
                     )
                 }
-                post { listener?.onSuccess(Action.UPLOAD, "Uploaded: $remotePath") }
+                post { listener?.onSuccess(Action.UPLOAD, "Uploaded: ${encAll(remotePath)}") }
             } catch (e: SocketException) {
                 error(Action.UPLOAD, FtpError.Timeout(e))
             } catch (e: FileNotFoundException) {
@@ -339,15 +339,15 @@ class FTPService(
 
             // --- Helpers: fetch remote SIZE and MDTM safely ---
             fun fetchRemoteSize(): Long = runCatching {
-                val code = ftp.sendCommand("SIZE", remotePath)
+                val code = ftp.sendCommand("SIZE", encAll(remotePath))
                 if (FTPReply.isPositiveCompletion(code)) {
                     // reply like: "213 34026047"
                     Regex("""\d+""").findAll(ftp.replyString.orEmpty())
                         .lastOrNull()?.value?.toLongOrNull() ?: -1L
                 } else {
-                    ftp.mlistFile(remotePath)?.size ?: run {
-                        val parent = remotePath.substringBeforeLast('/', "")
-                        val name = remotePath.substringAfterLast('/')
+                    ftp.mlistFile(encAll(remotePath))?.size ?: run {
+                        val parent = encAll(remotePath.substringBeforeLast('/', ""))
+                        val name = encAll(remotePath).substringAfterLast('/')
                         val list =
                             if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
                         list?.firstOrNull { it.name == name }?.size ?: -1L
@@ -357,7 +357,7 @@ class FTPService(
 
             fun fetchRemoteMdtmEpochMillis(): Long = runCatching {
                 // Response: "213 YYYYMMDDHHMMSS"
-                val resp = ftp.getModificationTime(remotePath) ?: return@runCatching -1L
+                val resp = ftp.getModificationTime(encAll(remotePath)) ?: return@runCatching -1L
                 val nums = Regex("""\d{14}""").find(resp)?.value ?: return@runCatching -1L
                 val year = nums.substring(0, 4).toInt()
                 val mon = nums.substring(4, 6).toInt()
@@ -395,8 +395,7 @@ class FTPService(
             // --- Progress wiring (same semantics as your Java listener) ---
             val totalForProgress = if (remoteSize > 0) remoteSize else -1L
             ftp.copyStreamListener = object : org.apache.commons.net.io.CopyStreamListener {
-                override fun bytesTransferred(event: CopyStreamEvent?) { /* no-op */
-                }
+                override fun bytesTransferred(event: CopyStreamEvent?) { /* no-op */ }
 
                 override fun bytesTransferred(
                     totalBytesTransferred: Long,
@@ -431,7 +430,7 @@ class FTPService(
                 // Notify start (if you have such a hook; optional)
                 // post { listener?.onStartDownload() } // uncomment if you expose it
 
-                val downloaded = ftp.retrieveFile(remotePath, fos)
+                val downloaded = ftp.retrieveFile(encAll(remotePath), fos)
 
                 if (!downloaded) {
                     val replyCode = ftp.replyCode
@@ -477,7 +476,7 @@ class FTPService(
             } catch (e: SocketException) {
                 error(Action.DOWNLOAD, FtpError.Timeout(e))
             } catch (e: FileNotFoundException) {
-                error(Action.DOWNLOAD, FtpError.PathNotFound(remotePath, e))
+                error(Action.DOWNLOAD, FtpError.PathNotFound(encAll(remotePath), e))
             } catch (e: IOException) {
                 error(Action.DOWNLOAD, FtpError.IO(e))
             } finally {
@@ -499,14 +498,14 @@ class FTPService(
                 ftp.bufferSize = bufferSize
             }
             val remoteSize = runCatching {
-                val code = ftp.sendCommand("SIZE", remotePath)
+                val code = ftp.sendCommand("SIZE", encAll(remotePath))
                 if (FTPReply.isPositiveCompletion(code)) {
                     val line = ftp.replyString.orEmpty()
                     Regex("""\d+""").findAll(line).lastOrNull()?.value?.toLongOrNull() ?: -1L
                 } else {
-                    ftp.mlistFile(remotePath)?.size ?: run {
-                        val parent = remotePath.substringBeforeLast('/', "")
-                        val name = remotePath.substringAfterLast('/')
+                    ftp.mlistFile(encAll(remotePath))?.size ?: run {
+                        val parent = encAll(remotePath.substringBeforeLast('/', ""))
+                        val name = encAll(remotePath.substringAfterLast('/'))
                         val list =
                             if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
                         list?.firstOrNull { it.name == name }?.size ?: -1L
@@ -526,7 +525,7 @@ class FTPService(
             val totalForProgress = if (remoteSize > 0) remoteSize else -1L
             ftp.copyStreamListener = object : org.apache.commons.net.io.CopyStreamListener {
                 override fun bytesTransferred(event: CopyStreamEvent?) {
-                    TODO("Not yet implemented")
+                    // Not yet implemented
                 }
 
                 override fun bytesTransferred(
@@ -556,7 +555,7 @@ class FTPService(
             try {
                 fos = FileOutputStream(destFile, /*append*/ false)
                 bos = BufferedOutputStream(fos, bufferSize)
-                val ok = ftp.retrieveFile(remotePath, bos)
+                val ok = ftp.retrieveFile(encAll(remotePath), bos)
                 runCatching { bos.flush() }
                 runCatching { fos.fd.sync() }
 
@@ -569,7 +568,7 @@ class FTPService(
                     /*if (localLen != remoteSize) {
                         if (tryDownload != 0 && tryDownloaded < tryDownload) {
                             tryDownloaded++
-                            download(remotePath, destFile, tryDownload)
+                            download(encAll(remotePath, destFile, tryDownload)
                             return@run
                         }
                         listener?.onError(
@@ -603,7 +602,7 @@ class FTPService(
             } catch (e: SocketException) {
                 error(Action.DOWNLOAD, FtpError.Timeout(e))
             } catch (e: FileNotFoundException) {
-                error(Action.DOWNLOAD, FtpError.PathNotFound(remotePath, e))
+                error(Action.DOWNLOAD, FtpError.PathNotFound(encAll(remotePath), e))
             } catch (e: IOException) {
                 error(Action.DOWNLOAD, FtpError.IO(e))
             } finally {
@@ -645,8 +644,8 @@ class FTPService(
                     )
 
                     val remoteSize = runCatching {
-                        val parentPath = remotePath.substringBeforeLast('/')
-                        val fileName = remotePath.substringAfterLast('/')
+                        val parentPath = encAll(remotePath).substringBeforeLast('/')
+                        val fileName = encAll(remotePath).substringAfterLast('/')
 
                         ftp.listFiles(parentPath)
                             ?.firstOrNull { it.name == fileName }
@@ -658,7 +657,7 @@ class FTPService(
                     if (resumeAt > 0L) ftp.restartOffset = resumeAt
                     raf = RandomAccessFile(part, "rw").apply { seek(resumeAt) }
 
-                    ins = ftp.retrieveFileStream(remotePath)
+                    ins = ftp.retrieveFileStream(encAll(remotePath))
                         ?: throw FileNotFoundException("Cannot open stream: $remotePath")
 
                     val buf = ByteArray(bufferSize)
@@ -727,7 +726,7 @@ class FTPService(
                     }
                     return@run
                 } catch (e: FileNotFoundException) {
-                    error(Action.DOWNLOAD, FtpError.PathNotFound(remotePath, e)); return@run
+                    error(Action.DOWNLOAD, FtpError.PathNotFound(encAll(remotePath), e)); return@run
                 } catch (e: SocketException) {
                     if (attempt >= maxRetries) {
                         error(Action.DOWNLOAD, FtpError.Timeout(e)); return@run
@@ -780,7 +779,7 @@ class FTPService(
 
                     val localSize = localFile.length().coerceAtLeast(0L)
                     val remoteSize = runCatching {
-                        ftp.listFiles(remotePath)?.firstOrNull()?.size ?: 0L
+                        ftp.listFiles(encAll(remotePath))?.firstOrNull()?.size ?: 0L
                     }.getOrDefault(0L)
 
                     if (remoteSize > localSize) {
@@ -795,7 +794,7 @@ class FTPService(
                                 listOf(
                                     FileModel(
                                         Type.FILE,
-                                        File(remotePath).name,
+                                        File(encAll(remotePath)).name,
                                         localSize,
                                         Action.UPLOAD,
                                         localSize,
@@ -804,7 +803,7 @@ class FTPService(
                                 )
                             )
                         }
-                        post { listener?.onSuccess(Action.UPLOAD, "Already uploaded: $remotePath") }
+                        post { listener?.onSuccess(Action.UPLOAD, "Already uploaded: ${encAll(remotePath)}") }
                         return@run
                     }
 
@@ -812,7 +811,7 @@ class FTPService(
                     skipFully(fis, remoteSize)
                     if (remoteSize > 0L) ftp.setRestartOffset(remoteSize)
 
-                    out = ftp.storeFileStream(remotePath)
+                    out = ftp.storeFileStream(encAll(remotePath))
                         ?: throw IOException("storeFileStream failed (reply=${ftp.replyCode})")
 
                     val buf = ByteArray(bufferSize)
@@ -825,7 +824,7 @@ class FTPService(
                             listOf(
                                 FileModel(
                                     Type.FILE,
-                                    File(remotePath).name,
+                                    File(encAll(remotePath)).name,
                                     total,
                                     Action.UPLOAD,
                                     transferred,
@@ -843,7 +842,7 @@ class FTPService(
                                 listOf(
                                     FileModel(
                                         Type.FILE,
-                                        File(remotePath).name,
+                                        File(encAll(remotePath)).name,
                                         total,
                                         Action.UPLOAD,
                                         transferred,
@@ -861,7 +860,7 @@ class FTPService(
                             listOf(
                                 FileModel(
                                     Type.FILE,
-                                    File(remotePath).name,
+                                    File(encAll(remotePath)).name,
                                     total,
                                     Action.UPLOAD,
                                     total,
@@ -870,7 +869,7 @@ class FTPService(
                             )
                         )
                     }
-                    post { listener?.onSuccess(Action.UPLOAD, "Uploaded: $remotePath") }
+                    post { listener?.onSuccess(Action.UPLOAD, "Uploaded: ${encAll(remotePath)}") }
                     return@run
                 } catch (e: FileNotFoundException) {
                     error(
@@ -942,7 +941,7 @@ class FTPService(
 
         items.forEach { item ->
             pool.submit {
-                
+
                 val name = File(encAll(item.remotePath)).name
                 val key = "upload:$name:${encAll(item.remotePath).hashCode()}"
                 var attempt = 0
@@ -1022,7 +1021,12 @@ class FTPService(
                             localSize
                         )
                         postProgressSnapshot()
-                        post { listener?.onSuccess(Action.UPLOAD, "Uploaded: ${encAll(item.remotePath)}") }
+                        post {
+                            listener?.onSuccess(
+                                Action.UPLOAD,
+                                "Uploaded: ${encAll(item.remotePath)}"
+                            )
+                        }
                         break
                     } catch (e: FileNotFoundException) {
                         post {

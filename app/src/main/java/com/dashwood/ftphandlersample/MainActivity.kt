@@ -173,10 +173,8 @@ fun Greeting(
                 listFile.add(
                     UploadItem(
                         picked,
-                        "${REMOTE_BASE.value}/Factor_main - 114 - 1760514468683 - سلام درخشان زندگیئ خرء دنیاؤ فان.jpg"
+                        "${REMOTE_BASE.value}/your file")
                     )
-                )
-                println("${REMOTE_BASE.value}سلام درخشانً زندگیئ خرء دنیاؤ فانِ/.jpg")
             }
             // ✅ Guard: prevent double-submit while a batch is in-flight
             Button(
@@ -188,6 +186,14 @@ fun Greeting(
 
                 }
             ) { Text(if (isUploading) "Uploading…" else "Upload") }
+
+            Button(
+                onClick = {
+                   // ftpService.uploadManySequential(listFile)
+                    ftpService.download("${REMOTE_BASE.value}/your file", desFile, true)
+
+                }
+            ) { Text("Upload") }
         }
 
         items(items = fileModelList, key = { it.name }) { fileModel ->
