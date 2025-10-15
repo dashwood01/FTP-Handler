@@ -94,7 +94,7 @@ class FTPService(
      * Encode EVERY path segment (dir + filename).
      * This is the most robust option when directories may contain non-ASCII characters.
      */
-    fun encAll(fullPath: String): String {
+    private fun encAll(fullPath: String): String {
         if (fullPath.isEmpty()) return fullPath
         val sb = StringBuilder(fullPath.length + 8)
         var i = 0
@@ -942,8 +942,9 @@ class FTPService(
 
         items.forEach { item ->
             pool.submit {
-                val name = File(item.remotePath).name
-                val key = "upload:$name:${item.remotePath.hashCode()}"
+                
+                val name = File(encAll(item.remotePath)).name
+                val key = "upload:$name:${encAll(item.remotePath).hashCode()}"
                 var attempt = 0
 
                 while (true) {
@@ -963,7 +964,7 @@ class FTPService(
                         if (localSize <= 0L) throw FileNotFoundException("Empty/missing: ${item.local.absolutePath}")
 
                         val remoteSize = runCatching {
-                            ftp.listFiles(item.remotePath)?.firstOrNull()?.size ?: 0L
+                            ftp.listFiles(encAll(item.remotePath))?.firstOrNull()?.size ?: 0L
                         }.getOrDefault(0L)
                         if (remoteSize > localSize) throw IOException("Remote larger than local")
 
@@ -982,7 +983,7 @@ class FTPService(
                             post {
                                 listener?.onSuccess(
                                     Action.UPLOAD,
-                                    "Already uploaded: ${item.remotePath}"
+                                    "Already uploaded: ${encAll(item.remotePath)}"
                                 )
                             }
                             break
@@ -992,7 +993,7 @@ class FTPService(
                         skipFully(fis, remoteSize)
                         if (remoteSize > 0L) ftp.setRestartOffset(remoteSize)
 
-                        out = ftp.storeFileStream(item.remotePath)
+                        out = ftp.storeFileStream(encAll(item.remotePath))
                             ?: throw IOException("storeFileStream failed (reply=${ftp.replyCode})")
 
                         val buf = ByteArray(bufferSize)
@@ -1021,7 +1022,7 @@ class FTPService(
                             localSize
                         )
                         postProgressSnapshot()
-                        post { listener?.onSuccess(Action.UPLOAD, "Uploaded: ${item.remotePath}") }
+                        post { listener?.onSuccess(Action.UPLOAD, "Uploaded: ${encAll(item.remotePath)}") }
                         break
                     } catch (e: FileNotFoundException) {
                         post {
@@ -1118,14 +1119,14 @@ class FTPService(
                             if (localSize <= 0L) throw FileNotFoundException("Empty/missing: ${item.local.absolutePath}")
 
                             val remoteSize = runCatching {
-                                ftp.listFiles(item.remotePath)?.firstOrNull()?.size ?: 0L
+                                ftp.listFiles(encAll(item.remotePath))?.firstOrNull()?.size ?: 0L
                             }
                                 .getOrDefault(0L)
                             if (remoteSize > localSize) throw IOException("Remote larger than local")
 
                             var transferred = remoteSize
-                            val name = File(item.remotePath).name
-                            progressMap[item.remotePath] = FileModel(
+                            val name = File(encAll(item.remotePath)).name
+                            progressMap[encAll(item.remotePath)] = FileModel(
                                 Type.FILE,
                                 name,
                                 localSize,
@@ -1139,7 +1140,7 @@ class FTPService(
                                 post {
                                     listener?.onSuccess(
                                         Action.UPLOAD,
-                                        "Already uploaded: ${item.remotePath}"
+                                        "Already uploaded: ${encAll(item.remotePath)}"
                                     )
                                 }
                                 break
@@ -1153,7 +1154,7 @@ class FTPService(
                                 skipFully(fis, remoteSize)
                                 if (remoteSize > 0L) ftp.setRestartOffset(remoteSize)
 
-                                val out = ftp.storeFileStream(item.remotePath)
+                                val out = ftp.storeFileStream(encAll(item.remotePath))
                                     ?: throw IOException("storeFileStream failed (reply=${ftp.replyCode})")
 
                                 out.use { o ->
@@ -1161,7 +1162,7 @@ class FTPService(
                                     while (true) {
                                         val n = fis.read(buf); if (n <= 0) break
                                         o.write(buf, 0, n); transferred += n
-                                        progressMap[item.remotePath] = FileModel(
+                                        progressMap[encAll(item.remotePath)] = FileModel(
                                             Type.FILE,
                                             name,
                                             localSize,
@@ -1176,7 +1177,7 @@ class FTPService(
                                 if (!ftp.completePendingCommand()) throw IOException("completePendingCommand failed (reply=${ftp!!.replyCode})")
                             }
 
-                            progressMap[item.remotePath] = FileModel(
+                            progressMap[encAll(item.remotePath)] = FileModel(
                                 Type.FILE,
                                 name,
                                 localSize,
@@ -1188,7 +1189,7 @@ class FTPService(
                             post {
                                 listener?.onSuccess(
                                     Action.UPLOAD,
-                                    "Uploaded: ${item.remotePath}"
+                                    "Uploaded: ${encAll(item.remotePath)}"
                                 )
                             }
                             break
@@ -1233,7 +1234,7 @@ class FTPService(
 
                         }
                     }
-                    progressMap.remove(item.remotePath)
+                    progressMap.remove(encAll(item.remotePath))
                     postProgressSnapshot()
                 }
 
@@ -1282,7 +1283,7 @@ class FTPService(
                         )
 
                         val remoteSize = runCatching {
-                            ftp.listFiles(item.remotePath)?.firstOrNull()?.size ?: -1L
+                            ftp.listFiles(encAll(item.remotePath))?.firstOrNull()?.size ?: -1L
                         }.getOrDefault(-1L)
                         val resumeAt = (if (part.exists()) part.length() else 0L).coerceAtLeast(0L)
 
@@ -1315,8 +1316,8 @@ class FTPService(
                         raf = RandomAccessFile(part, "rw").apply { seek(resumeAt) }
                         if (resumeAt > 0L) ftp.setRestartOffset(resumeAt)
 
-                        ins = ftp.retrieveFileStream(item.remotePath)
-                            ?: throw FileNotFoundException("Cannot open stream: ${item.remotePath}")
+                        ins = ftp.retrieveFileStream(encAll(item.remotePath))
+                            ?: throw FileNotFoundException("Cannot open stream: ${encAll(item.remotePath)}")
 
                         val buf = ByteArray(bufferSize)
                         while (true) {
@@ -1361,7 +1362,7 @@ class FTPService(
                         post {
                             listener?.onError(
                                 Action.DOWNLOAD,
-                                FtpError.PathNotFound(item.remotePath, e)
+                                FtpError.PathNotFound(encAll(item.remotePath), e)
                             )
                         }
                         break

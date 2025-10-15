@@ -64,7 +64,7 @@ fun Greeting(
     // Live transfer snapshots keyed by FULL remote path or dest path (avoid same-name collisions)
     val transfers = remember { mutableStateMapOf<String, FileModel>() }
     val REMOTE_BASE =
-        remember { mutableStateOf("/Projects/Android/Test_Ftp") }
+        remember { mutableStateOf("your path") }
     val downFolder = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
     val desFile =
         File(downFolder.absolutePath + "/" + "Temp.rar")
@@ -77,10 +77,10 @@ fun Greeting(
     // ✅ Create the service ONCE; never recreate across recompositions
     val ftpService = remember {
         FTPService(
-            host = "workspace.oscaret.com",
-            port = 2100,
-            username = "ftpsepehrandroid",
-            password = "FTPSep@And!14"
+            host = "host",
+            port = 0,
+            username = "user",
+            password = "pass"
         )
     }
 
@@ -173,7 +173,7 @@ fun Greeting(
                 listFile.add(
                     UploadItem(
                         picked,
-                        ftpService.encAll("${REMOTE_BASE.value}/Factor_main - 114 - 1760514468683 - سلام درخشان زندگیئ خرء دنیاؤ فان.jpg")
+                        "${REMOTE_BASE.value}/Factor_main - 114 - 1760514468683 - سلام درخشان زندگیئ خرء دنیاؤ فان.jpg"
                     )
                 )
                 println("${REMOTE_BASE.value}سلام درخشانً زندگیئ خرء دنیاؤ فانِ/.jpg")
