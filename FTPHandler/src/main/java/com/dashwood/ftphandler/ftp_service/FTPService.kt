@@ -1,24 +1,25 @@
 package com.dashwood.ftphandler.ftp_service
 
-import org.apache.commons.net.ftp.FTP
-import org.apache.commons.net.ftp.FTPClient
-import org.apache.commons.net.ftp.FTPSClient
-import org.apache.commons.net.ftp.FTPFile
-import java.io.*
-import java.net.SocketException
-import java.nio.charset.StandardCharsets
-import java.time.Duration
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
 import android.os.Handler
 import android.os.Looper
 import com.dashwood.ftphandler.listener.OnFTPJobListener
 import com.dashwood.ftphandler.model.FileModel
 import com.dashwood.ftphandler.models.DownloadItem
 import com.dashwood.ftphandler.models.UploadItem
+import org.apache.commons.net.ftp.FTP
+import org.apache.commons.net.ftp.FTPClient
+import org.apache.commons.net.ftp.FTPFile
 import org.apache.commons.net.ftp.FTPReply
+import org.apache.commons.net.ftp.FTPSClient
 import org.apache.commons.net.io.CopyStreamEvent
+import java.io.*
+import java.net.SocketException
+import java.nio.charset.StandardCharsets
+import java.time.Duration
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
+
 
 /**
  * FTPService — Listener-based FTP/FTPS helper for Android with multi + resumable transfers.
@@ -76,9 +77,31 @@ class FTPService(
             val ftp = newClient()
             client = ftp
             connectAndLogin(ftp)
+            configureEncoding(ftp)
             applySafeDefaults(ftp)
             post { listener?.onConnected() }
             post { listener?.onSuccess(Action.CONNECT, "Connected to $host:$port") }
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun configureEncoding(ftp: FTPClient) {
+        try {
+            ftp.autodetectUTF8 = true
+        } catch (_: Throwable) {
+        }
+        ftp.controlEncoding = "UTF-8"
+        try {
+            ftp.sendCommand("OPTS", "UTF8 ON")
+        } catch (_: Throwable) {
+        }
+        val utf8Supported = try {
+            ftp.hasFeature("UTF8")
+        } catch (_: Throwable) {
+            false
+        }
+        if (!utf8Supported) {
+            ftp.controlEncoding = "Windows-1256"
         }
     }
 
@@ -273,7 +296,8 @@ class FTPService(
                     ftp.mlistFile(remotePath)?.size ?: run {
                         val parent = remotePath.substringBeforeLast('/', "")
                         val name = remotePath.substringAfterLast('/')
-                        val list = if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
+                        val list =
+                            if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
                         list?.firstOrNull { it.name == name }?.size ?: -1L
                     }
                 }
@@ -284,11 +308,11 @@ class FTPService(
                 val resp = ftp.getModificationTime(remotePath) ?: return@runCatching -1L
                 val nums = Regex("""\d{14}""").find(resp)?.value ?: return@runCatching -1L
                 val year = nums.substring(0, 4).toInt()
-                val mon  = nums.substring(4, 6).toInt()
-                val day  = nums.substring(6, 8).toInt()
+                val mon = nums.substring(4, 6).toInt()
+                val day = nums.substring(6, 8).toInt()
                 val hour = nums.substring(8, 10).toInt()
-                val min  = nums.substring(10, 12).toInt()
-                val sec  = nums.substring(12, 14).toInt()
+                val min = nums.substring(10, 12).toInt()
+                val sec = nums.substring(12, 14).toInt()
                 java.time.ZonedDateTime.of(
                     year, mon, day, hour, min, sec, 0,
                     java.time.ZoneOffset.UTC
@@ -319,7 +343,9 @@ class FTPService(
             // --- Progress wiring (same semantics as your Java listener) ---
             val totalForProgress = if (remoteSize > 0) remoteSize else -1L
             ftp.copyStreamListener = object : org.apache.commons.net.io.CopyStreamListener {
-                override fun bytesTransferred(event: CopyStreamEvent?) { /* no-op */ }
+                override fun bytesTransferred(event: CopyStreamEvent?) { /* no-op */
+                }
+
                 override fun bytesTransferred(
                     totalBytesTransferred: Long,
                     bytesTransferred: Int,
@@ -357,9 +383,12 @@ class FTPService(
 
                 if (!downloaded) {
                     val replyCode = ftp.replyCode
-                    val replyMsg  = ftp.replyString.orEmpty()
+                    val replyMsg = ftp.replyString.orEmpty()
                     // Match your error typing
-                    error(Action.DOWNLOAD, FtpError.Protocol(Throwable("FTP download failed. Code: $replyCode | Message: $replyMsg")))
+                    error(
+                        Action.DOWNLOAD,
+                        FtpError.Protocol(Throwable("FTP download failed. Code: $replyCode | Message: $replyMsg"))
+                    )
                     return@run
                 }
 
@@ -434,7 +463,12 @@ class FTPService(
             }.getOrDefault(-1L)
 
             if (destFile.exists() && remoteSize > 0 && kotlin.math.abs(destFile.length() - remoteSize) <= 1) {
-                post { listener?.onSuccess(Action.DOWNLOAD, "Downloaded: ${destFile.absolutePath}") }
+                post {
+                    listener?.onSuccess(
+                        Action.DOWNLOAD,
+                        "Downloaded: ${destFile.absolutePath}"
+                    )
+                }
                 return@run
             }
             val totalForProgress = if (remoteSize > 0) remoteSize else -1L
