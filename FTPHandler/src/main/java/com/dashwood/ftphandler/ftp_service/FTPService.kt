@@ -130,11 +130,11 @@ class FTPService(
         } catch (_: Throwable) {
         }
 
-        val utf8Supported = try { ftp.hasFeature("UTF8") } catch (_: Throwable) { false }
+       /* val utf8Supported = try { ftp.hasFeature("UTF8") } catch (_: Throwable) { false }
         if (utf8Supported) {
             pathMode = PathEncodingMode.NATIVE_UTF8
             return
-        }
+        }*/
 
         // 2) Fallback: tunnel UTF-8 through ISO-8859-1 (very effective on many legacy servers)
         ftp.controlEncoding = "ISO-8859-1"
