@@ -246,46 +246,80 @@ class FTPService(
         }
     }
 
-    fun download(remotePath: String, destFile: File, tryDownload: Int = 0) {
+    fun download(
+        remotePath: String,
+        destFile: File,
+        checkIfAlreadyDownloaded: Boolean = true
+    ) {
         run(Action.DOWNLOAD) {
             val ftp = requireConnected(Action.DOWNLOAD) ?: return@run
+
+            // --- Configure exactly like the Java code does (simple & reliable) ---
             runCatching {
                 ftp.enterLocalPassiveMode()
                 ftp.setFileType(FTP.BINARY_FILE_TYPE)
                 ftp.setFileTransferMode(FTP.STREAM_TRANSFER_MODE)
                 ftp.bufferSize = bufferSize
             }
-            val remoteSize = runCatching {
+
+            // --- Helpers: fetch remote SIZE and MDTM safely ---
+            fun fetchRemoteSize(): Long = runCatching {
                 val code = ftp.sendCommand("SIZE", remotePath)
-                if (org.apache.commons.net.ftp.FTPReply.isPositiveCompletion(code)) {
-                    val line = ftp.replyString.orEmpty()
-                    Regex("""\d+""").findAll(line).lastOrNull()?.value?.toLongOrNull() ?: -1L
+                if (FTPReply.isPositiveCompletion(code)) {
+                    // reply like: "213 34026047"
+                    Regex("""\d+""").findAll(ftp.replyString.orEmpty())
+                        .lastOrNull()?.value?.toLongOrNull() ?: -1L
                 } else {
                     ftp.mlistFile(remotePath)?.size ?: run {
                         val parent = remotePath.substringBeforeLast('/', "")
                         val name = remotePath.substringAfterLast('/')
-                        val list =
-                            if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
+                        val list = if (parent.isNotEmpty()) ftp.listFiles(parent) else ftp.listFiles()
                         list?.firstOrNull { it.name == name }?.size ?: -1L
                     }
                 }
             }.getOrDefault(-1L)
 
-            if (destFile.exists() && remoteSize > 0 && destFile.length() == remoteSize) {
-                post {
-                    listener?.onSuccess(
-                        Action.DOWNLOAD,
-                        "Downloaded: ${destFile.absolutePath}"
-                    )
+            fun fetchRemoteMdtmEpochMillis(): Long = runCatching {
+                // Response: "213 YYYYMMDDHHMMSS"
+                val resp = ftp.getModificationTime(remotePath) ?: return@runCatching -1L
+                val nums = Regex("""\d{14}""").find(resp)?.value ?: return@runCatching -1L
+                val year = nums.substring(0, 4).toInt()
+                val mon  = nums.substring(4, 6).toInt()
+                val day  = nums.substring(6, 8).toInt()
+                val hour = nums.substring(8, 10).toInt()
+                val min  = nums.substring(10, 12).toInt()
+                val sec  = nums.substring(12, 14).toInt()
+                java.time.ZonedDateTime.of(
+                    year, mon, day, hour, min, sec, 0,
+                    java.time.ZoneOffset.UTC
+                ).toInstant().toEpochMilli()
+            }.getOrDefault(-1L)
+
+            val remoteSize = fetchRemoteSize()
+            val remoteMdtm = fetchRemoteMdtmEpochMillis()
+
+            // --- "Already downloaded" check: require both SIZE match and MDTM match (when available) ---
+            if (checkIfAlreadyDownloaded && destFile.exists() && remoteSize > 0) {
+                val sizeOk = destFile.length() == remoteSize
+                val timeOk = if (remoteMdtm > 0) {
+                    // some servers lose 1s precision; allow small tolerance
+                    kotlin.math.abs(destFile.lastModified() - remoteMdtm) <= 1500L
+                } else true // if MDTM unavailable, we can’t check it
+                if (sizeOk && timeOk) {
+                    post {
+                        listener?.onSuccess(
+                            Action.DOWNLOAD,
+                            "Downloaded: ${destFile.absolutePath}"
+                        )
+                    }
+                    return@run
                 }
-                return@run
             }
+
+            // --- Progress wiring (same semantics as your Java listener) ---
             val totalForProgress = if (remoteSize > 0) remoteSize else -1L
             ftp.copyStreamListener = object : org.apache.commons.net.io.CopyStreamListener {
-                override fun bytesTransferred(event: CopyStreamEvent?) {
-                    TODO("Not yet implemented")
-                }
-
+                override fun bytesTransferred(event: CopyStreamEvent?) { /* no-op */ }
                 override fun bytesTransferred(
                     totalBytesTransferred: Long,
                     bytesTransferred: Int,
@@ -308,33 +342,33 @@ class FTPService(
                 }
             }
 
-            var fos: FileOutputStream? = null
-            var bos: BufferedOutputStream? = null
-            try {
-                fos = FileOutputStream(destFile, /*append*/ false)
-                bos = BufferedOutputStream(fos, bufferSize)
-                val ok = ftp.retrieveFile(remotePath, bos)
-                runCatching { bos.flush() }
-                runCatching { fos.fd.sync() }
+            // --- Create parent dir like the Java version does ---
+            runCatching { destFile.parentFile?.takeIf { !it.exists() }?.mkdirs() }
 
-                if (!ok) {
-                    error(Action.DOWNLOAD, FtpError.Protocol())
+            var fos: FileOutputStream? = null
+            try {
+                // Mirror the Java code: direct FileOutputStream (no extra buffering/sync)
+                fos = FileOutputStream(destFile, /* append = */ false)
+
+                // Notify start (if you have such a hook; optional)
+                // post { listener?.onStartDownload() } // uncomment if you expose it
+
+                val downloaded = ftp.retrieveFile(remotePath, fos)
+
+                if (!downloaded) {
+                    val replyCode = ftp.replyCode
+                    val replyMsg  = ftp.replyString.orEmpty()
+                    // Match your error typing
+                    error(Action.DOWNLOAD, FtpError.Protocol(Throwable("FTP download failed. Code: $replyCode | Message: $replyMsg")))
                     return@run
                 }
+
+                // If MDTM was available, stamp the file so future “already downloaded” checks are rock-solid.
+                if (remoteMdtm > 0) runCatching { destFile.setLastModified(remoteMdtm) }
+
+                // Optional: report a final progress event at 100%
                 if (remoteSize > 0) {
                     val localLen = destFile.length()
-                    if (localLen != remoteSize) {
-                        if (tryDownload != 0 && tryDownloaded < tryDownload) {
-                            tryDownloaded++
-                            download(remotePath, destFile, tryDownload)
-                            return@run
-                        }
-                        listener?.onError(
-                            Action.DOWNLOAD, FtpError.MismatchSize(
-                                Throwable("SIZE mismatch (server=$remoteSize, local=$localLen).")
-                            )
-                        )
-                    }
                     post {
                         listener?.onProgress(
                             listOf(
@@ -350,6 +384,8 @@ class FTPService(
                         )
                     }
                 }
+
+                // Success
                 post {
                     listener?.onSuccess(
                         Action.DOWNLOAD,
@@ -364,18 +400,12 @@ class FTPService(
             } catch (e: IOException) {
                 error(Action.DOWNLOAD, FtpError.IO(e))
             } finally {
-                try {
-                    bos?.close()
-                } catch (_: Throwable) {
-                }
-                try {
-                    fos?.close()
-                } catch (_: Throwable) {
-                }
+                runCatching { fos?.close() }
                 ftp.copyStreamListener = null
             }
         }
     }
+
 
     //I created this method because some server doesn't send right size of file
     fun downloadWithoutCheckSizeForAByte(remotePath: String, destFile: File) {
